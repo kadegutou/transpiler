@@ -118,7 +118,64 @@ pub fn generate(ir: &Module) -> Result<String> {
         out.push('\n');
     }
 
+    // Post-process: fix String indexing (C++ s[i] → Rust s.as_bytes()[i])
+    let string_vars = collect_string_vars_from_ir(ir);
+    if !string_vars.is_empty() {
+        let mut result = String::new();
+        for line in out.lines() {
+            let mut fixed = line.to_string();
+            for var in &string_vars {
+                let pattern = format!("{}[", var);
+                fixed = fixed.replace(&pattern, &format!("{}.as_bytes()[", var));
+            }
+            result.push_str(&fixed);
+            result.push('\n');
+        }
+        out = result;
+    }
+
     Ok(out)
+}
+
+/// Collect variable names that are typed as String from the IR.
+fn collect_string_vars_from_ir(ir: &Module) -> std::collections::HashSet<String> {
+    let mut vars = std::collections::HashSet::new();
+    for item in &ir.items {
+        match item {
+            Item::Function(f) => {
+                for p in &f.params {
+                    if is_string_type(&p.ty) { vars.insert(p.name.clone()); }
+                }
+                collect_string_vars_block(&f.body, &mut vars);
+            }
+            Item::Struct(s) => {
+                for m in &s.methods {
+                    for p in &m.params {
+                        if is_string_type(&p.ty) { vars.insert(p.name.clone()); }
+                    }
+                    collect_string_vars_block(&m.body, &mut vars);
+                }
+            }
+            _ => {}
+        }
+    }
+    vars
+}
+
+fn is_string_type(ty: &Type) -> bool {
+    matches!(ty, Type::Named(name, _) if name == "String" || name == "string")
+}
+
+fn collect_string_vars_block(block: &Block, vars: &mut std::collections::HashSet<String>) {
+    for stmt in &block.stmts {
+        if let Stmt::Let(l) = stmt {
+            if let Some(ty) = &l.ty {
+                if is_string_type(ty) {
+                    vars.insert(l.name.clone());
+                }
+            }
+        }
+    }
 }
 
 fn generate_item(out: &mut String, item: &Item) -> Result<()> {
@@ -771,10 +828,6 @@ fn is_endl_expr(expr: &Expr) -> bool {
 }
 
 fn generate_expr(out: &mut String, expr: &Expr, _indent: usize) -> Result<()> {
-    generate_expr_inner(out, expr, _indent)
-}
-
-fn generate_expr_inner(out: &mut String, expr: &Expr, _indent: usize) -> Result<()> {
     match expr {
         Expr::Literal(lit) => generate_literal_inline(out, lit),
         Expr::Ident(name) => out.push_str(name),
@@ -893,6 +946,13 @@ fn generate_expr_inner(out: &mut String, expr: &Expr, _indent: usize) -> Result<
                         generate_expr(out, arg, _indent)?;
                     }
                     out.push(')');
+                    return Ok(());
+                }
+                if name == "abs" {
+                    // C++ abs(x) → Rust (x).abs()
+                    out.push('(');
+                    generate_expr(out, &args[0], _indent)?;
+                    out.push_str(").abs()");
                     return Ok(());
                 }
             }
