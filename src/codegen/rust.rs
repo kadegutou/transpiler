@@ -118,7 +118,78 @@ pub fn generate(ir: &Module) -> Result<String> {
         out.push('\n');
     }
 
+    // LeetCode-compatible wrappers: public standalone functions without &self
+    generate_leetcode_wrappers(&mut out, ir)?;
+
     Ok(out)
+}
+
+/// Generate standalone wrapper functions for LeetCode compatibility.
+/// LeetCode calls `Solution::method(param)` without `&self`, but our
+/// methods are instance methods. These wrappers bridge the gap.
+fn generate_leetcode_wrappers(out: &mut String, ir: &Module) -> Result<()> {
+    for item in &ir.items {
+        if let Item::Struct(s) = item {
+            for method in &s.methods {
+                // Only wrap public, non-constructor, non-destructor methods
+                if method.name == s.name || method.name.starts_with('~') {
+                    continue;
+                }
+                let mut wrapper = String::new();
+                let mut f = method.clone();
+                f.self_param = None; // Remove &self
+                f.is_method = false;
+
+                // Generate the wrapper function
+                if f.is_unsafe { wrapper.push_str("unsafe "); }
+                wrapper.push_str("pub fn ");
+                wrapper.push_str(&f.name);
+                wrapper.push('(');
+                for (i, p) in f.params.iter().enumerate() {
+                    if i > 0 { wrapper.push_str(", "); }
+                    wrapper.push_str(&p.name);
+                    wrapper.push_str(": ");
+                    generate_type_inline(&mut wrapper, &p.ty)?;
+                }
+                wrapper.push(')');
+                let is_main = f.name == "main";
+                if !is_main {
+                    if let Some(ref ret) = f.ret_ty {
+                        if *ret != Type::Unit {
+                            wrapper.push_str(" -> ");
+                            generate_type_inline(&mut wrapper, ret)?;
+                        }
+                    }
+                }
+                wrapper.push_str(" {\n");
+                // Call the method on a default instance
+                wrapper.push_str("    ");
+                if f.ret_ty.as_ref() != Some(&Type::Unit) {
+                    wrapper.push_str("return ");
+                }
+                wrapper.push_str(&s.name);
+                wrapper.push_str("{}.");
+                wrapper.push_str(&f.name);
+                wrapper.push('(');
+                for (i, p) in f.params.iter().enumerate() {
+                    if i > 0 { wrapper.push_str(", "); }
+                    wrapper.push_str(&p.name);
+                }
+                wrapper.push_str(");\n");
+                wrapper.push_str("}\n");
+
+                // Self-referential: in C++, fields accessed via `this->` are now
+                // `self.` in the method. But the wrapper creates a fresh default
+                // instance. Replace `self.` → `<struct>.`  in the wrapper.
+                // Actually, the call is already `<struct>.<method>()`, so we
+                // just need to emit the call. The method implementation stays
+                // with &self on the struct.
+
+                out.push_str(&wrapper);
+            }
+        }
+    }
+    Ok(())
 }
 
 fn generate_item(out: &mut String, item: &Item) -> Result<()> {
