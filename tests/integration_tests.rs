@@ -219,3 +219,33 @@ fn test_pipeline_inheritance_comment() {
     assert!(result.contains("Inheritance"));
     assert!(result.contains("Animal"));
 }
+
+#[test]
+fn test_lambda_with_params() {
+    let source = "void f() { auto g = [](int x, int y) -> int { return x + y; }; }";
+    let result = transpile(source, Direction::CppToRust).unwrap();
+    assert!(result.contains("|x: i32, y: i32|"));
+    assert!(result.contains("x + y"));
+}
+
+#[test]
+fn test_size_method_as_i32() {
+    let source = "void f() { vector<int> v; int s = v.size(); }";
+    let result = transpile(source, Direction::CppToRust).unwrap();
+    assert!(result.contains("len() as i32"));
+}
+
+#[test]
+fn test_max_min_to_std_cmp() {
+    let source = "void f() { int x = max(1, 2); int y = min(3, 4); }";
+    let result = transpile(source, Direction::CppToRust).unwrap();
+    assert!(result.contains("std::cmp::max("));
+    assert!(result.contains("std::cmp::min("));
+}
+
+#[test]
+fn test_array_index_as_usize() {
+    let source = "void f() { vector<vector<int>> m; int x = m[0][1]; }";
+    let result = transpile(source, Direction::CppToRust).unwrap();
+    assert!(result.contains("as usize"));
+}

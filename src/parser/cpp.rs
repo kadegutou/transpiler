@@ -1737,7 +1737,7 @@ fn parse_lambda_expression(node: Node, source: &str) -> Result<Expr> {
             "lambda_capture_specifier" => {
                 // MVP: ignore captures, default to Rust closure semantics
             }
-            "lambda_declarator" => {
+            "lambda_declarator" | "abstract_function_declarator" | "function_declarator" => {
                 let mut c = child.walk();
                 for ch in child.children(&mut c) {
                     match ch.kind() {
@@ -1745,10 +1745,10 @@ fn parse_lambda_expression(node: Node, source: &str) -> Result<Expr> {
                             params = parse_parameter_list(ch, source)?;
                         }
                         "trailing_return_type" => {
-                            // e.g. "-> vector<int>"
                             let mut c2 = ch.walk();
                             for ch2 in ch.children(&mut c2) {
-                                if ch2.kind() == "type" {
+                                if ch2.kind() == "type" || ch2.kind() == "template_type"
+                                    || ch2.kind() == "primitive_type" || ch2.kind() == "type_identifier" {
                                     if let Ok(t) = parse_type_node(ch2, source) {
                                         ret_ty = Some(t);
                                     }

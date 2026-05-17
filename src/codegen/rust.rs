@@ -673,6 +673,7 @@ fn generate_stmt(out: &mut String, stmt: &Stmt, indent: usize) -> Result<()> {
                                 generate_expr(out, &args[1], indent)?;
                                 out.push_str("; ");
                                 generate_expr(out, &args[0], indent)?;
+                                out.push_str(" as usize");
                                 out.push(']');
                             }
                             _ => generate_expr(out, init, indent)?,
@@ -843,6 +844,10 @@ fn generate_expr_inner(out: &mut String, expr: &Expr, _indent: usize) -> Result<
                         out.push('.');
                         out.push_str(rust_method);
                         out.push_str("()");
+                        // .len() returns usize but we need i32 for compatibility
+                        if method.as_str() == "size" {
+                            out.push_str(" as i32");
+                        }
                         return Ok(());
                     }
                     "push_back" | "emplace_back" | "emplace" if !args.is_empty() => {
@@ -865,6 +870,28 @@ fn generate_expr_inner(out: &mut String, expr: &Expr, _indent: usize) -> Result<
                     _ => {}
                 }
             }
+            // Map C++ free functions to Rust equivalents
+            if let Expr::Ident(name) = callee.as_ref() {
+                if name == "max" {
+                    out.push_str("std::cmp::max(");
+                    for (i, arg) in args.iter().enumerate() {
+                        if i > 0 { out.push_str(", "); }
+                        generate_expr(out, arg, _indent)?;
+                    }
+                    out.push(')');
+                    return Ok(());
+                }
+                if name == "min" {
+                    out.push_str("std::cmp::min(");
+                    for (i, arg) in args.iter().enumerate() {
+                        if i > 0 { out.push_str(", "); }
+                        generate_expr(out, arg, _indent)?;
+                    }
+                    out.push(')');
+                    return Ok(());
+                }
+            }
+
             // Handle vector constructors
             if let Expr::Ident(name) = callee.as_ref() {
                 if name == "vector" || name == "std::vector" {
@@ -884,6 +911,7 @@ fn generate_expr_inner(out: &mut String, expr: &Expr, _indent: usize) -> Result<
                             generate_expr(out, &args[1], _indent)?;
                             out.push_str("; ");
                             generate_expr(out, &args[0], _indent)?;
+                            out.push_str(" as usize");
                             out.push(']');
                             return Ok(());
                         }
@@ -951,6 +979,10 @@ fn generate_expr_inner(out: &mut String, expr: &Expr, _indent: usize) -> Result<
                 generate_expr(out, arg, _indent)?;
             }
             out.push(')');
+            // .len() returns usize but we need i32
+            if method.as_str() == "size" {
+                out.push_str(" as i32");
+            }
         }
         Expr::Field(obj, field) => {
             generate_expr(out, obj, _indent)?;
@@ -961,6 +993,7 @@ fn generate_expr_inner(out: &mut String, expr: &Expr, _indent: usize) -> Result<
             generate_expr(out, arr, _indent)?;
             out.push('[');
             generate_expr(out, idx, _indent)?;
+            out.push_str(" as usize");
             out.push(']');
         }
         Expr::If(cond, then_branch, else_branch) => {
