@@ -36,6 +36,8 @@ pub struct Function {
     pub body: Block,
     /// True if this function is marked `unsafe` (Rust) or uses raw pointers (C++).
     pub is_unsafe: bool,
+    /// True if this function is marked `virtual` (C++) or is a trait method (Rust).
+    pub is_virtual: bool,
     /// True if this is a method (associated with a type).
     pub is_method: bool,
     /// For methods: the `self` parameter style.
@@ -197,6 +199,14 @@ pub enum Mutability {
     Not,
 }
 
+/// Base class with access specifier.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BaseClass {
+    pub ty: Type,
+    pub visibility: Visibility,
+    pub is_virtual: bool,
+}
+
 /// Struct definition.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StructDef {
@@ -205,6 +215,7 @@ pub struct StructDef {
     pub fields: Vec<FieldDef>,
     pub is_class: bool, // true for C++ class, false for struct
     pub methods: Vec<Function>,
+    pub base_classes: Vec<BaseClass>,
 }
 
 /// Field definition.

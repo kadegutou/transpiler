@@ -161,3 +161,55 @@ fn test_pipeline_decl_with_vector() {
     assert!(result.contains("Vec<i32>"));
     assert!(result.contains("VecDeque<i32>"));
 }
+
+#[test]
+fn test_virtual_method_detection() {
+    let source = "class A { public: virtual void f() {} };";
+    let ir = cpp_rust_transpiler::parser::cpp::parse(source).unwrap();
+    assert_eq!(ir.items.len(), 1);
+    match &ir.items[0] {
+        cpp_rust_transpiler::ir::Item::Struct(s) => {
+            assert!(!s.methods.is_empty());
+            assert!(s.methods[0].is_virtual);
+        }
+        _ => panic!("expected Struct"),
+    }
+}
+
+#[test]
+fn test_inheritance_parsing() {
+    let source = "class Dog : public Animal { public: void bark() {} };";
+    let ir = cpp_rust_transpiler::parser::cpp::parse(source).unwrap();
+    match &ir.items[0] {
+        cpp_rust_transpiler::ir::Item::Struct(s) => {
+            assert_eq!(s.base_classes.len(), 1);
+            assert_eq!(s.name, "Dog");
+        }
+        _ => panic!("expected Struct"),
+    }
+}
+
+#[test]
+fn test_alias_declaration() {
+    let source = "using MyInt = int;";
+    let ir = cpp_rust_transpiler::parser::cpp::parse(source).unwrap();
+    assert_eq!(ir.items.len(), 1);
+    assert!(matches!(ir.items[0], cpp_rust_transpiler::ir::Item::TypeAlias(_, _)));
+}
+
+#[test]
+fn test_pipeline_virtual_to_trait() {
+    let source = "class A { public: virtual void f() {} };";
+    let result = transpile(source, Direction::CppToRust).unwrap();
+    assert!(result.contains("trait ATrait"));
+    assert!(result.contains("fn f(&self);"));
+    assert!(result.contains("impl ATrait for A"));
+}
+
+#[test]
+fn test_pipeline_inheritance_comment() {
+    let source = "class Dog : public Animal { public: void bark() {} };";
+    let result = transpile(source, Direction::CppToRust).unwrap();
+    assert!(result.contains("Inheritance"));
+    assert!(result.contains("Animal"));
+}

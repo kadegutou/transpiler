@@ -224,6 +224,82 @@ fn generate_function(out: &mut String, f: &Function) -> Result<()> {
 }
 
 fn generate_struct(out: &mut String, s: &StructDef) -> Result<()> {
+    // Emit inheritance comments for base classes
+    if !s.base_classes.is_empty() {
+        out.push_str("// Inheritance:\n");
+        for base in &s.base_classes {
+            out.push_str("//   ");
+            match base.visibility {
+                Visibility::Public => out.push_str("public "),
+                Visibility::Protected => out.push_str("protected "),
+                Visibility::Private => out.push_str("private "),
+            }
+            if base.is_virtual {
+                out.push_str("virtual ");
+            }
+            generate_type_inline(out, &base.ty)?;
+            out.push('\n');
+        }
+        out.push('\n');
+    }
+
+    // Separate virtual and non-virtual methods
+    let (virtual_methods, regular_methods): (Vec<&Function>, Vec<&Function>) =
+        s.methods.iter().partition(|m| m.is_virtual);
+
+    // Generate trait for virtual methods
+    let trait_name = format!("{}Trait", s.name);
+    if !virtual_methods.is_empty() {
+        out.push_str("pub trait ");
+        out.push_str(&trait_name);
+        if !s.generics.is_empty() {
+            out.push('<');
+            for (i, g) in s.generics.iter().enumerate() {
+                if i > 0 {
+                    out.push_str(", ");
+                }
+                out.push_str(&g.name);
+            }
+            out.push('>');
+        }
+        out.push_str(" {\n");
+        for method in &virtual_methods {
+            let mut m = (*method).clone();
+            // Strip body from trait method declarations
+            m.body = Block { stmts: vec![], expr: None };
+            // Destructor mapping
+            if m.name.starts_with('~') {
+                continue; // Destructor maps to Drop trait, skip from custom trait
+            }
+            out.push_str("    fn ");
+            out.push_str(&m.name);
+            out.push('(');
+            if let Some(ref sp) = m.self_param {
+                generate_self_param(out, sp);
+                if !m.params.is_empty() {
+                    out.push_str(", ");
+                }
+            }
+            for (i, p) in m.params.iter().enumerate() {
+                if i > 0 {
+                    out.push_str(", ");
+                }
+                out.push_str(&p.name);
+                out.push_str(": ");
+                generate_type_inline(out, &p.ty)?;
+            }
+            out.push(')');
+            if let Some(ref ret) = m.ret_ty {
+                if *ret != Type::Unit {
+                    out.push_str(" -> ");
+                    generate_type_inline(out, ret)?;
+                }
+            }
+            out.push_str(";\n");
+        }
+        out.push_str("}\n\n");
+    }
+
     out.push_str("pub struct ");
     out.push_str(&s.name);
     if !s.generics.is_empty() {
@@ -246,8 +322,8 @@ fn generate_struct(out: &mut String, s: &StructDef) -> Result<()> {
     }
     out.push_str("}\n");
 
-    // Generate impl block for methods extracted from C++ class
-    if !s.methods.is_empty() {
+    // Generate impl block for regular methods
+    if !regular_methods.is_empty() || !s.methods.is_empty() {
         out.push_str("\nimpl ");
         if !s.generics.is_empty() {
             out.push('<');
@@ -277,8 +353,7 @@ fn generate_struct(out: &mut String, s: &StructDef) -> Result<()> {
             if method.name == s.name {
                 method.name = "new".to_string();
                 method.ret_ty = Some(Type::Named("Self".to_string(), vec![]));
-                method.self_param = None; // constructor is an associated function, not a method
-                // Build `Self { field1, field2, ... }` assuming param names match field names
+                method.self_param = None;
                 let init_fields: Vec<(String, Expr)> = s.fields.iter()
                     .map(|f| (f.name.clone(), Expr::Ident(f.name.clone())))
                     .collect();
@@ -286,6 +361,20 @@ fn generate_struct(out: &mut String, s: &StructDef) -> Result<()> {
                     stmts: vec![],
                     expr: Some(Box::new(Expr::StructInit("Self".to_string(), init_fields))),
                 };
+            }
+            // Destructor -> Drop trait
+            if method.name.starts_with('~') {
+                out.push_str("    // Destructor maps to Drop trait:\n");
+                out.push_str("    // impl Drop for ");
+                out.push_str(&s.name);
+                out.push_str(" { fn drop(&mut self) { ... } }\n");
+                continue;
+            }
+            // Virtual methods output as trait impl
+            if method.is_virtual {
+                out.push_str("    // (virtual — see ");
+                out.push_str(&trait_name);
+                out.push_str(")\n");
             }
             let mut fn_str = String::new();
             generate_function(&mut fn_str, &method)?;
@@ -297,7 +386,60 @@ fn generate_struct(out: &mut String, s: &StructDef) -> Result<()> {
         }
         out.push_str("}\n");
     }
+
+    // Generate impl for the trait if there are virtual methods
+    if !virtual_methods.is_empty() {
+        out.push_str("\nimpl ");
+        if !s.generics.is_empty() {
+            out.push('<');
+            for (i, g) in s.generics.iter().enumerate() {
+                if i > 0 {
+                    out.push_str(", ");
+                }
+                out.push_str(&g.name);
+            }
+            out.push('>');
+        }
+        out.push_str(&trait_name);
+        out.push_str(" for ");
+        out.push_str(&s.name);
+        if !s.generics.is_empty() {
+            out.push('<');
+            for (i, g) in s.generics.iter().enumerate() {
+                if i > 0 {
+                    out.push_str(", ");
+                }
+                out.push_str(&g.name);
+            }
+            out.push('>');
+        }
+        out.push_str(" {\n");
+        for method in &virtual_methods {
+            if method.name.starts_with('~') {
+                out.push_str("    // Destructor → see Drop trait impl above\n");
+                continue;
+            }
+            let mut fn_str = String::new();
+            generate_function(&mut fn_str, method)?;
+            for line in fn_str.lines() {
+                out.push_str("    ");
+                out.push_str(line);
+                out.push('\n');
+            }
+        }
+        out.push_str("}\n");
+    }
     Ok(())
+}
+
+fn generate_self_param(out: &mut String, sp: &SelfParam) {
+    match sp {
+        SelfParam::Value => out.push_str("self"),
+        SelfParam::Ref => out.push_str("&self"),
+        SelfParam::MutRef => out.push_str("&mut self"),
+        SelfParam::Ptr => out.push_str("*const self"),
+        SelfParam::MutPtr => out.push_str("*mut self"),
+    }
 }
 
 fn generate_enum(out: &mut String, e: &EnumDef) -> Result<()> {
@@ -850,12 +992,20 @@ fn generate_expr(out: &mut String, expr: &Expr, _indent: usize) -> Result<()> {
             out.push('}');
         }
         Expr::While(cond, body) => {
-            out.push_str("while ");
-            generate_expr(out, cond, _indent)?;
-            out.push_str(" {\n");
-            generate_block(out, body, _indent + 1)?;
-            out.push_str(&"    ".repeat(_indent));
-            out.push('}');
+            // Emit `loop { ... }` for `while true`, idiomatic Rust
+            if matches!(cond.as_ref(), Expr::Literal(Literal::Bool(true))) {
+                out.push_str("loop {\n");
+                generate_block(out, body, _indent + 1)?;
+                out.push_str(&"    ".repeat(_indent));
+                out.push('}');
+            } else {
+                out.push_str("while ");
+                generate_expr(out, cond, _indent)?;
+                out.push_str(" {\n");
+                generate_block(out, body, _indent + 1)?;
+                out.push_str(&"    ".repeat(_indent));
+                out.push('}');
+            }
         }
         Expr::For(head, body) => {
             out.push_str("for ");

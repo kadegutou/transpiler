@@ -128,6 +128,24 @@ fn generate_struct(out: &mut String, s: &StructDef) -> Result<()> {
         }
         out.push_str(">");
     }
+    // Base classes
+    if !s.base_classes.is_empty() {
+        out.push_str(" : ");
+        for (i, base) in s.base_classes.iter().enumerate() {
+            if i > 0 {
+                out.push_str(", ");
+            }
+            match base.visibility {
+                Visibility::Public => out.push_str("public "),
+                Visibility::Protected => out.push_str("protected "),
+                Visibility::Private => out.push_str("private "),
+            }
+            if base.is_virtual {
+                out.push_str("virtual ");
+            }
+            generate_type_inline(out, &base.ty)?;
+        }
+    }
     out.push_str(" {\n");
     if s.is_class {
         out.push_str("public:\n");
@@ -138,6 +156,43 @@ fn generate_struct(out: &mut String, s: &StructDef) -> Result<()> {
         out.push(' ');
         out.push_str(&field.name);
         out.push_str(";\n");
+    }
+    // Methods
+    for method in &s.methods {
+        if method.name == s.name || method.name.starts_with('~') {
+            continue; // constructor/destructor handled elsewhere
+        }
+        out.push_str("    ");
+        if method.is_virtual {
+            out.push_str("virtual ");
+        }
+        if let Some(ret) = &method.ret_ty {
+            generate_type_inline(out, ret)?;
+        } else {
+            out.push_str("void");
+        }
+        out.push(' ');
+        out.push_str(&method.name);
+        out.push('(');
+        for (j, p) in method.params.iter().enumerate() {
+            if j > 0 {
+                out.push_str(", ");
+            }
+            generate_type_inline(out, &p.ty)?;
+            out.push(' ');
+            out.push_str(&p.name);
+        }
+        out.push_str(")");
+        if method.is_virtual && method.body.stmts.is_empty() {
+            out.push_str(" = 0"); // pure virtual
+        }
+        if method.body.stmts.is_empty() && method.body.expr.is_none() {
+            out.push_str(";\n");
+        } else {
+            out.push_str(" {\n");
+            generate_block(out, &method.body, 2)?;
+            out.push_str("    }\n");
+        }
     }
     out.push_str("};\n");
     Ok(())

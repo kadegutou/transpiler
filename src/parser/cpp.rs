@@ -90,8 +90,15 @@ fn parse_translation_unit(node: Node, source: &str) -> Result<Module> {
                 }
             }
             "preproc_include" | "preproc_def" | "preproc_function_def" | "comment" => {}
-            "using_declaration" | "alias_declaration" => {
-                items.push(Item::TODOComment("using/alias".to_string()));
+            "using_declaration" => {
+                if let Ok(use_item) = parse_using_declaration(child, source) {
+                    items.push(use_item);
+                }
+            }
+            "alias_declaration" | "type_alias_declaration" => {
+                if let Ok(alias_item) = parse_alias_declaration(child, source) {
+                    items.push(alias_item);
+                }
             }
             ";" => {}
             _ => {
@@ -237,6 +244,65 @@ fn parse_namespace_definition(node: Node, source: &str) -> Result<Vec<Item>> {
     Ok(items)
 }
 
+/// Parse `using_declaration` — `using namespace::name;` or `using std::cout;`
+fn parse_using_declaration(node: Node, source: &str) -> Result<Item> {
+    // Walk children to build the full path string
+    let mut parts = Vec::new();
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        match child.kind() {
+            "using" | "namespace" | ";" => {}
+            "qualified_identifier" | "identifier" | "type_identifier"
+            | "scope_resolution" | "::" | "nested_name_specifier" => {
+                parts.push(text(child, source).to_string());
+            }
+            _ => {}
+        }
+    }
+    if parts.is_empty() {
+        return Ok(Item::TODOComment("empty using declaration".to_string()));
+    }
+    Ok(Item::Use(parts.join("")))
+}
+
+/// Parse `alias_declaration` — `using name = type;`
+fn parse_alias_declaration(node: Node, source: &str) -> Result<Item> {
+    let mut name = String::new();
+    let mut ty = Type::Infer;
+
+    let mut cursor = node.walk();
+    let mut found_eq = false;
+    for child in node.children(&mut cursor) {
+        match child.kind() {
+            "using" | ";" => {}
+            "=" => found_eq = true,
+            "identifier" | "type_identifier" if !found_eq => {
+                name = text(child, source).to_string();
+            }
+            "type" | "template_type" | "qualified_identifier" | "type_identifier"
+            | "primitive_type" | "sized_type_specifier" if found_eq => {
+                if let Ok(t) = parse_type_node(child, source) {
+                    ty = t;
+                }
+            }
+            _ if found_eq && child.is_named() => {
+                // Try to parse as type even if the kind is unexpected
+                if ty == Type::Infer {
+                    if let Ok(t) = parse_type_node(child, source) {
+                        ty = t;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    if name.is_empty() {
+        return Ok(Item::TODOComment("empty alias declaration".to_string()));
+    }
+    Ok(Item::TypeAlias(name, ty))
+}
+
 // =========================================================================
 // Function definition
 // =========================================================================
@@ -248,6 +314,7 @@ fn parse_function_definition(node: Node, source: &str) -> Result<Function> {
     let mut body = Block { stmts: vec![], expr: None };
     let mut generics = Vec::new();
     let mut is_unsafe = false;
+    let mut is_virtual = false;
 
     if let Some(type_node) = node.child_by_field_name("type") {
         ret_ty = Some(parse_type_node(type_node, source)?);
@@ -264,11 +331,33 @@ fn parse_function_definition(node: Node, source: &str) -> Result<Function> {
         body = parse_compound_statement(body_node, source)?;
     }
 
-    // Template params still via children walk
+    // Walk children for template params, virtual specifier, etc.
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
-        if child.kind() == "template_parameter_list" {
-            generics = parse_template_params(child, source)?;
+        match child.kind() {
+            "template_parameter_list" => {
+                generics = parse_template_params(child, source)?;
+            }
+            "virtual_function_specifier" | "virtual" | "virtual_specifier" => {
+                is_virtual = true;
+            }
+            "override_specifier" => {
+                // `override` implies virtual in C++; mark as virtual
+                is_virtual = true;
+            }
+            "virtual_function_definition" => {
+                // tree-sitter-cpp may wrap virtual methods in this node
+                if let Ok(f) = parse_function_definition(child, source) {
+                    name = f.name;
+                    params = f.params;
+                    ret_ty = f.ret_ty;
+                    body = f.body;
+                    generics = f.generics;
+                    is_unsafe = f.is_unsafe;
+                    is_virtual = true;
+                }
+            }
+            _ => {}
         }
     }
 
@@ -279,6 +368,7 @@ fn parse_function_definition(node: Node, source: &str) -> Result<Function> {
         ret_ty,
         body,
         is_unsafe,
+        is_virtual,
         is_method: false,
         self_param: None,
     })
@@ -453,6 +543,7 @@ fn parse_declaration(node: Node, source: &str) -> Result<Vec<Item>> {
                             expr: None,
                         },
                         is_unsafe: false,
+                        is_virtual: false,
                         is_method: false,
                         self_param: None,
                     }));
@@ -467,6 +558,7 @@ fn parse_declaration(node: Node, source: &str) -> Result<Vec<Item>> {
                     ret_ty: Some(base_ty.clone()),
                     body: Block { stmts: vec![], expr: None },
                     is_unsafe: false,
+                    is_virtual: false,
                     is_method: false,
                     self_param: None,
                 }));
@@ -493,6 +585,7 @@ fn parse_declaration(node: Node, source: &str) -> Result<Vec<Item>> {
                         expr: None,
                     },
                     is_unsafe: false,
+                    is_virtual: false,
                     is_method: false,
                     self_param: None,
                 }));
@@ -518,6 +611,7 @@ fn parse_declaration(node: Node, source: &str) -> Result<Vec<Item>> {
                         expr: None,
                     },
                     is_unsafe: false,
+                    is_virtual: false,
                     is_method: false,
                     self_param: None,
                 }));
@@ -593,6 +687,7 @@ fn parse_class_specifier(node: Node, source: &str) -> Result<StructDef> {
     let mut fields = Vec::new();
     let mut methods = Vec::new();
     let mut generics = Vec::new();
+    let mut base_classes = Vec::new();
 
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
@@ -609,7 +704,7 @@ fn parse_class_specifier(node: Node, source: &str) -> Result<StructDef> {
                 generics = parse_template_params(child, source)?;
             }
             "base_class_clause" => {
-                // TODO: inheritance
+                base_classes = parse_base_class_clause(child, source);
             }
             "{" | "}" | ";" => {}
             _ => {}
@@ -622,7 +717,46 @@ fn parse_class_specifier(node: Node, source: &str) -> Result<StructDef> {
         fields,
         is_class,
         methods,
+        base_classes,
     })
+}
+
+/// Parse `base_class_clause`: extracts base class types with access specifiers.
+fn parse_base_class_clause(node: Node, source: &str) -> Vec<BaseClass> {
+    let mut bases = Vec::new();
+    let mut pending_vis = Visibility::Public;
+    let mut pending_virtual = false;
+
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        match child.kind() {
+            "access_specifier" => {
+                pending_vis = match text(child, source) {
+                    "public" => Visibility::Public,
+                    "protected" => Visibility::Protected,
+                    "private" => Visibility::Private,
+                    _ => Visibility::Public,
+                };
+            }
+            "virtual" => {
+                pending_virtual = true;
+            }
+            "qualified_identifier" | "type_identifier" | "template_type" => {
+                if let Ok(ty) = parse_type_node(child, source) {
+                    bases.push(BaseClass {
+                        ty,
+                        visibility: pending_vis,
+                        is_virtual: pending_virtual,
+                    });
+                }
+                pending_vis = Visibility::Public;
+                pending_virtual = false;
+            }
+            ":" | "," => {}
+            _ => {}
+        }
+    }
+    bases
 }
 
 fn parse_field_declaration_list(node: Node, source: &str, _struct_name: &str) -> Result<(Vec<FieldDef>, Vec<Function>)> {
@@ -642,10 +776,13 @@ fn parse_field_declaration_list(node: Node, source: &str, _struct_name: &str) ->
             if let Ok(f) = parse_field_declaration(child, source) {
                 fields.push(f);
             }
-        } else if child.kind() == "function_definition" {
+        } else if child.kind() == "function_definition" || child.kind() == "virtual_function_definition" {
             if let Ok(mut m) = parse_function_definition(child, source) {
                 m.is_method = true;
                 m.self_param = Some(SelfParam::Ref);
+                if child.kind() == "virtual_function_definition" {
+                    m.is_virtual = true;
+                }
                 // In C++ member functions, `this` is implicit. We rewrite
                 // `this` to `self` and unqualified field names to `self.field`.
                 rewrite_this_in_block(&mut m.body, &field_names);
@@ -1457,8 +1594,14 @@ fn parse_assignment_expression(node: Node, source: &str) -> Result<Expr> {
     let right = node
         .child_by_field_name("right")
         .ok_or_else(|| anyhow::anyhow!("no right"))?;
+    // Detect compound assignment (*=, +=, -=, etc.) vs plain =
+    let op = if let Some(op_node) = node.child_by_field_name("operator") {
+        parse_bin_op(text(op_node, source)).unwrap_or(BinOp::Assign)
+    } else {
+        BinOp::Assign
+    };
     Ok(Expr::Binary(
-        BinOp::Assign,
+        op,
         Box::new(parse_expression(left, source)?),
         Box::new(parse_expression(right, source)?),
     ))
@@ -1853,8 +1996,10 @@ pub fn cpp_type_to_ir(ty: &str) -> Result<Type> {
         Ok(Type::Unit)
     } else if ty == "auto" {
         Ok(Type::Infer)
-    } else if ty == "int" || ty == "long" || ty == "short" || ty == "char" {
+    } else if ty == "int" || ty == "short" || ty == "char" {
         Ok(Type::Named(ty.to_string(), vec![]))
+    } else if ty == "long" || ty == "long long" {
+        Ok(Type::Named("long".to_string(), vec![]))
     } else if ty == "bool" {
         Ok(Type::Named("bool".to_string(), vec![]))
     } else if ty == "std::queue" || ty == "queue" {
