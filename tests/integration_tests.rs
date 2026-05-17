@@ -249,3 +249,19 @@ fn test_array_index_as_usize() {
     let result = transpile(source, Direction::CppToRust).unwrap();
     assert!(result.contains("as usize"));
 }
+
+#[test]
+fn test_c_array_type() {
+    let source = "void f() { int corners[4][2] = {{0}}; }";
+    let result = transpile(source, Direction::CppToRust).unwrap();
+    assert!(result.contains("[[i32; 2]; 4]"));
+}
+
+#[test]
+fn test_structured_binding() {
+    let source = "void f() { int arr[2][2] = {{0}}; for (auto& [a, b] : arr) { int s = a + b; } }";
+    let result = transpile(source, Direction::CppToRust).unwrap();
+    assert!(result.contains("_iter_item"));
+    assert!(result.contains("let a = _iter_item"));
+    assert!(result.contains("let b = _iter_item"));
+}

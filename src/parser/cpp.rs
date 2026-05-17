@@ -563,7 +563,7 @@ fn parse_declaration(node: Node, source: &str) -> Result<Vec<Item>> {
                     self_param: None,
                 }));
             }
-            "declarator" | "reference_declarator" | "pointer_declarator" => {
+            "declarator" | "reference_declarator" | "pointer_declarator" | "array_declarator" => {
                 let name = extract_identifier_name(child, source);
                 let mut ty = augment_type_with_declarator(base_ty.clone(), child, source).unwrap_or(base_ty.clone());
                 if let Some(type_node) = type_node_opt {
@@ -1243,16 +1243,25 @@ fn parse_range_for_statement(node: Node, source: &str) -> Result<Stmt> {
         stmts: vec![],
         expr: None,
     };
+    // Structured binding names (populated during parsing, applied after body is parsed)
+    let mut structured_bind_names: Vec<String> = Vec::new();
 
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
         match child.kind() {
             "for" | ";" | "(" | ")" | ":" => {}
             "declaration" => {
-                // Directly extract the variable name from declarators
                 let mut c = child.walk();
                 for ch in child.children(&mut c) {
                     match ch.kind() {
+                        "structured_binding_declarator" => {
+                            let mut c2 = ch.walk();
+                            for ch2 in ch.children(&mut c2) {
+                                if ch2.kind() == "identifier" {
+                                    structured_bind_names.push(text(ch2, source).to_string());
+                                }
+                            }
+                        }
                         "init_declarator" | "declarator" | "reference_declarator" | "pointer_declarator" => {
                             let name = extract_identifier_name(ch, source);
                             if !name.is_empty() {
@@ -1263,11 +1272,24 @@ fn parse_range_for_statement(node: Node, source: &str) -> Result<Stmt> {
                     }
                 }
             }
-            "_declaration_specifiers" | "primitive_type" | "type_identifier" | "sized_type_specifier" => {}
+            "_declaration_specifiers" | "primitive_type" | "type_identifier" | "sized_type_specifier" | "placeholder_type_specifier" => {}
             "reference_declarator" | "pointer_declarator" | "declarator" => {
-                let name = extract_identifier_name(child, source);
-                if !name.is_empty() {
-                    pat = Pattern::Ident(name);
+                let mut c = child.walk();
+                for ch in child.children(&mut c) {
+                    if ch.kind() == "structured_binding_declarator" {
+                        let mut c2 = ch.walk();
+                        for ch2 in ch.children(&mut c2) {
+                            if ch2.kind() == "identifier" {
+                                structured_bind_names.push(text(ch2, source).to_string());
+                            }
+                        }
+                    }
+                }
+                if structured_bind_names.is_empty() {
+                    let name = extract_identifier_name(child, source);
+                    if !name.is_empty() {
+                        pat = Pattern::Ident(name);
+                    }
                 }
             }
             "compound_statement" => {
@@ -1279,6 +1301,26 @@ fn parse_range_for_statement(node: Node, source: &str) -> Result<Stmt> {
                 }
             }
         }
+    }
+
+    // After body is parsed, prepend structured binding let stmts
+    if !structured_bind_names.is_empty() {
+        let temp = "_iter_item".to_string();
+        let mut prepend_stmts: Vec<Stmt> = Vec::new();
+        for (idx, name) in structured_bind_names.iter().enumerate() {
+            prepend_stmts.push(Stmt::Let(LetStmt {
+                name: name.clone(),
+                ty: None,
+                init: Some(Box::new(Expr::Index(
+                    Box::new(Expr::Ident(temp.clone())),
+                    Box::new(Expr::Literal(Literal::Int(idx.to_string()))),
+                ))),
+                mutable: false,
+            }));
+        }
+        prepend_stmts.extend(body.stmts);
+        body.stmts = prepend_stmts;
+        pat = Pattern::Ident(temp);
     }
 
     Ok(Stmt::Expr(Box::new(Expr::For(
@@ -1958,6 +2000,47 @@ fn augment_type_with_declarator(base: Type, node: Node, source: &str) -> Result<
                     Mutability::Mut
                 },
             ))
+        }
+        "array_declarator" => {
+            // Collect all dimension sizes (tree-sitter gives them
+            // reversed: `corners[4][2]` is parsed as (corners[4])[2]).
+            // Build the type by reversing the collected sizes.
+            let mut sizes: Vec<usize> = Vec::new();
+
+            fn collect_array_sizes(node: tree_sitter::Node, source: &str, sizes: &mut Vec<usize>) {
+                let mut cursor = node.walk();
+                for child in node.children(&mut cursor) {
+                    match child.kind() {
+                        "array_declarator" => collect_array_sizes(child, source, sizes),
+                        "number_literal" => {
+                            if let Ok(n) = child.utf8_text(source.as_bytes()).unwrap_or("").parse::<usize>() {
+                                sizes.push(n);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            collect_array_sizes(node, source, &mut sizes);
+            sizes.reverse();
+
+            // Also get the inner type from the innermost array_declarator
+            fn get_inner(base: Type, node: tree_sitter::Node, source: &str) -> Type {
+                let mut cursor = node.walk();
+                for child in node.children(&mut cursor) {
+                    if child.kind() == "array_declarator" {
+                        return get_inner(base, child, source);
+                    }
+                }
+                base
+            }
+            let inner = get_inner(base.clone(), node, source);
+
+            let mut result = inner;
+            for size in sizes {
+                result = Type::Array(Box::new(result), Some(size));
+            }
+            Ok(result)
         }
         _ => Ok(base),
     }
