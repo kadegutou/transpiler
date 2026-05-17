@@ -765,6 +765,10 @@ fn is_endl_expr(expr: &Expr) -> bool {
 }
 
 fn generate_expr(out: &mut String, expr: &Expr, _indent: usize) -> Result<()> {
+    generate_expr_inner(out, expr, _indent)
+}
+
+fn generate_expr_inner(out: &mut String, expr: &Expr, _indent: usize) -> Result<()> {
     match expr {
         Expr::Literal(lit) => generate_literal_inline(out, lit),
         Expr::Ident(name) => out.push_str(name),
@@ -1204,9 +1208,9 @@ fn map_cpp_type_to_rust(name: &str) -> String {
         "ptrdiff_t" => "isize".to_string(),
         "float" => "f32".to_string(),
         "double" => "f64".to_string(),
-        "int" => "i64".to_string(),
-        "long" => "i64".to_string(),
-        "short" => "i64".to_string(),
+        "int" => "i32".to_string(),
+        "long" => "i32".to_string(),
+        "short" => "i32".to_string(),
         other => other.to_string(), // fallback
     }
 }

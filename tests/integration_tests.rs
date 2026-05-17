@@ -164,8 +164,8 @@ fn test_pipeline_template_function() {
 fn test_pipeline_decl_with_vector() {
     let source = "void f() { vector<int> order; queue<int> q; }";
     let result = transpile(source, Direction::CppToRust).unwrap();
-    assert!(result.contains("Vec<i64>"));
-    assert!(result.contains("VecDeque<i64>"));
+    assert!(result.contains("Vec<i32>"));
+    assert!(result.contains("VecDeque<i32>"));
 }
 
 #[test]
