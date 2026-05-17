@@ -1,5 +1,6 @@
 /target/
 /transpiler.exe
+/solution.rs
 **/*.rs.bk
 *.pdb
 .DS_Store
