@@ -1204,9 +1204,9 @@ fn map_cpp_type_to_rust(name: &str) -> String {
         "ptrdiff_t" => "isize".to_string(),
         "float" => "f32".to_string(),
         "double" => "f64".to_string(),
-        "int" => "i32".to_string(),
+        "int" => "i64".to_string(),
         "long" => "i64".to_string(),
-        "short" => "i16".to_string(),
+        "short" => "i64".to_string(),
         other => other.to_string(), // fallback
     }
 }

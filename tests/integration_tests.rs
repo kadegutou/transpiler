@@ -142,6 +142,12 @@ fn test_generic_type_parsing() {
             Type::Named("String".to_string(), vec![]),
         ])
     );
+
+    // Verify int maps to i64 in pipeline
+    assert_eq!(
+        cpp_type_to_ir("int").unwrap(),
+        Type::Named("int".to_string(), vec![])
+    );
 }
 
 #[test]
@@ -158,8 +164,8 @@ fn test_pipeline_template_function() {
 fn test_pipeline_decl_with_vector() {
     let source = "void f() { vector<int> order; queue<int> q; }";
     let result = transpile(source, Direction::CppToRust).unwrap();
-    assert!(result.contains("Vec<i32>"));
-    assert!(result.contains("VecDeque<i32>"));
+    assert!(result.contains("Vec<i64>"));
+    assert!(result.contains("VecDeque<i64>"));
 }
 
 #[test]
